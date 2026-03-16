@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.16.1] - 2026-03-16
+
+### Fixed
+- Landing page screenshots now display correctly (copied to `docs/images/`)
+- Added Extensions tab screenshots to landing page gallery
+
 ## [2.16.0] - 2026-03-16
 
 ### Added
