@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.15.0] - 2026-03-16
+
+### Fixed
+- Memory tab now reads the correct `observations` table from claude-mem (was querying non-existent `memories` table)
+- Fixed column mappings to match actual claude-mem schema (`memory_session_id`, `narrative`, `files_read`, `files_modified`)
+
+### Added
+- Memory activity timeline — bar chart of observations over the last 30 days with summary stats
+- Project summaries view — aggregated facts, concepts, and files per project
+- Export memories as Markdown — copy all or per-project to clipboard
+- Copy/delete individual observations via context menu on each memory row
+- Clickable file paths — open referenced files or project folders in Finder
+- Type badge on each observation row
+- Narrative display in memory rows
+
 ## [2.14.0] - 2026-03-16
 
 ### Added

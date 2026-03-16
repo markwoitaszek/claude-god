@@ -21,6 +21,7 @@ private enum Theme {
 struct MenuBarView: View {
     @ObservedObject var manager: UsageManager
     @State private var copiedFeedback = false
+    @State private var memorySection: MemorySection = .list
     @AppStorage(UDKey.dailyRange) private var dailyRange: Int = 7
 
     var body: some View {
@@ -1790,102 +1791,187 @@ struct MenuBarView: View {
         .padding(.vertical, 8)
     }
 
-    @ViewBuilder
-    private var memoryContent: some View {
-        let mm = manager.memoryManager
-        let stats = mm.stats
+    private enum MemorySection: String, CaseIterable {
+        case list = "Memories"
+        case activity = "Activity"
+        case projects = "Projects"
+    }
 
+    private var memoryContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Stats cards
             HStack(spacing: 8) {
-                SHStatCard(label: "Memories", value: "\(stats.totalMemories)", sub: "\(stats.recentCount) this week")
-                SHStatCard(label: "Sessions", value: "\(stats.totalSessions)", sub: "\(stats.totalProjects) projects")
+                SHStatCard(label: "Memories", value: "\(manager.memoryManager.stats.totalMemories)", sub: "\(manager.memoryManager.stats.recentCount) this week")
+                SHStatCard(label: "Sessions", value: "\(manager.memoryManager.stats.totalSessions)", sub: "\(manager.memoryManager.stats.totalProjects) projects")
             }
 
-            // Search + filter
+            // Section picker + actions
             HStack(spacing: 6) {
-                HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass")
+                ForEach(MemorySection.allCases, id: \.rawValue) { section in
+                    Button {
+                        memorySection = section
+                    } label: {
+                        Text(section.rawValue)
+                            .font(.system(size: 10, weight: memorySection == section ? .semibold : .regular))
+                            .foregroundColor(memorySection == section ? .primary : .secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .fill(memorySection == section ? Theme.muted : Color.clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+
+                // Export menu
+                Menu {
+                    Button {
+                        let md = manager.memoryManager.exportAllAsMarkdown()
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(md, forType: .string)
+                    } label: {
+                        Label("Copy all as Markdown", systemImage: "doc.on.doc")
+                    }
+                    if let project = manager.memoryManager.selectedProject {
+                        Button {
+                            let md = manager.memoryManager.exportProjectAsMarkdown(project: project)
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(md, forType: .string)
+                        } label: {
+                            Label("Copy \(projectDisplayName(project)) as Markdown", systemImage: "folder")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                    TextField("Search memories...", text: Binding(
-                        get: { manager.memoryManager.searchText },
-                        set: { manager.memoryManager.searchText = $0 }
-                    ))
-                        .font(.system(size: 11))
-                        .textFieldStyle(.plain)
-                        .onSubmit { manager.memoryManager.refresh() }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                        .fill(Theme.muted)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                                .stroke(Theme.border, lineWidth: 1)
-                        )
-                )
+                .menuStyle(.borderlessButton)
+                .fixedSize()
 
-                if !mm.projects.isEmpty {
-                    Menu {
-                        Button("All projects") {
-                            manager.memoryManager.selectedProject = nil
-                            manager.memoryManager.refresh()
-                        }
-                        Divider()
-                        ForEach(mm.projects, id: \.self) { project in
-                            Button(projectDisplayName(project)) {
-                                manager.memoryManager.selectedProject = project
-                                manager.memoryManager.refresh()
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "folder")
-                                .font(.system(size: 9))
-                            Text(mm.selectedProject.map(projectDisplayName) ?? "All")
-                                .font(.system(size: 10))
-                                .lineLimit(1)
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 5)
-                        .background(
-                            RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                                .fill(Theme.muted)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                                        .stroke(Theme.border, lineWidth: 1)
-                                )
-                        )
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                }
-            }
-
-            // Memory list
-            if mm.memories.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "tray")
-                        .font(.system(size: 20))
-                        .foregroundColor(.secondary)
-                    Text("No memories found")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 100)
-            } else {
-                VStack(spacing: 6) {
-                    ForEach(mm.memories.prefix(30)) { memory in
-                        memoryRow(memory)
-                    }
-                    if mm.memories.count > 30 {
-                        Text("\(mm.memories.count - 30) more...")
+                // Refresh
+                Button {
+                    manager.memoryManager.refresh()
+                } label: {
+                    if manager.memoryManager.isLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity)
                     }
+                }
+                .buttonStyle(.plain)
+                .disabled(manager.memoryManager.isLoading)
+            }
+
+            // Search + filter (only on list view)
+            if memorySection == .list {
+                memorySearchBar
+            }
+
+            // Content
+            switch memorySection {
+            case .list:
+                memoryListView
+            case .activity:
+                memoryActivityView
+            case .projects:
+                memoryProjectsView
+            }
+        }
+    }
+
+    private var memorySearchBar: some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                TextField("Search memories...", text: Binding(
+                    get: { manager.memoryManager.searchText },
+                    set: { manager.memoryManager.searchText = $0 }
+                ))
+                    .font(.system(size: 11))
+                    .textFieldStyle(.plain)
+                    .onSubmit { manager.memoryManager.refresh() }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                    .fill(Theme.muted)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                            .stroke(Theme.border, lineWidth: 1)
+                    )
+            )
+
+            if !manager.memoryManager.projects.isEmpty {
+                Menu {
+                    Button("All projects") {
+                        manager.memoryManager.selectedProject = nil
+                        manager.memoryManager.refresh()
+                    }
+                    Divider()
+                    ForEach(manager.memoryManager.projects, id: \.self) { project in
+                        Button(projectDisplayName(project)) {
+                            manager.memoryManager.selectedProject = project
+                            manager.memoryManager.refresh()
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 9))
+                        Text(manager.memoryManager.selectedProject.map(projectDisplayName) ?? "All")
+                            .font(.system(size: 10))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                            .fill(Theme.muted)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                                    .stroke(Theme.border, lineWidth: 1)
+                            )
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+        }
+    }
+
+    // MARK: - Memory list
+
+    @ViewBuilder
+    private var memoryListView: some View {
+        if manager.memoryManager.memories.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "tray")
+                    .font(.system(size: 20))
+                    .foregroundColor(.secondary)
+                Text("No memories found")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 100)
+        } else {
+            VStack(spacing: 6) {
+                ForEach(manager.memoryManager.memories.prefix(30)) { memory in
+                    memoryRow(memory)
+                }
+                if manager.memoryManager.memories.count > 30 {
+                    Text("\(manager.memoryManager.memories.count - 30) more...")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -1894,8 +1980,19 @@ struct MenuBarView: View {
     private func memoryRow(_ memory: ClaudeMemory) -> some View {
         SHCard {
             VStack(alignment: .leading, spacing: 4) {
-                // Title
+                // Title + actions
                 HStack(spacing: 4) {
+                    // Type badge
+                    Text(memory.type.uppercased())
+                        .font(.system(size: 7, weight: .bold, design: .monospaced))
+                        .foregroundColor(Theme.accent)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(Theme.accent.opacity(0.12))
+                        )
+
                     if let title = memory.title {
                         Text(title)
                             .font(.system(size: 11, weight: .semibold))
@@ -1905,6 +2002,35 @@ struct MenuBarView: View {
                     Text(memory.createdAt.formatted(date: .abbreviated, time: .omitted))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundColor(.secondary)
+
+                    // Context menu actions
+                    Menu {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(memory.toMarkdown(), forType: .string)
+                        } label: {
+                            Label("Copy as Markdown", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(memory.text, forType: .string)
+                        } label: {
+                            Label("Copy text", systemImage: "doc.on.clipboard")
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            manager.memoryManager.deleteMemory(id: memory.id)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                            .frame(width: 16, height: 16)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
 
                 // Subtitle
@@ -1915,8 +2041,13 @@ struct MenuBarView: View {
                         .lineLimit(1)
                 }
 
-                // Text (if no title)
-                if memory.title == nil {
+                // Narrative or text
+                if let narrative = memory.narrative {
+                    Text(narrative)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                } else if memory.title == nil {
                     Text(memory.text)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
@@ -1944,6 +2075,31 @@ struct MenuBarView: View {
                     }
                 }
 
+                // Files
+                if !memory.allFiles.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 8))
+                            .foregroundColor(.secondary)
+                        ForEach(memory.allFiles.prefix(3), id: \.self) { file in
+                            Button {
+                                openFileInFinder(file)
+                            } label: {
+                                Text((file as NSString).lastPathComponent)
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundColor(.blue)
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if memory.allFiles.count > 3 {
+                            Text("+\(memory.allFiles.count - 3)")
+                                .font(.system(size: 8))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
                 // Tags row
                 HStack(spacing: 4) {
                     if let project = memory.project {
@@ -1958,6 +2114,262 @@ struct MenuBarView: View {
             }
         }
     }
+
+    // MARK: - Activity timeline
+
+    private var memoryActivityView: some View {
+        memoryActivityContent(
+            activity: manager.memoryManager.dailyActivity
+        )
+    }
+
+    private func memoryActivityContent(activity: [DailyActivity]) -> some View {
+        let maxCount = activity.map(\.count).max() ?? 1
+        let filled = filledActivity(activity)
+        let total = activity.map(\.count).reduce(0, +)
+        let activeDays = activity.filter { $0.count > 0 }.count
+
+        return VStack(alignment: .leading, spacing: 8) {
+            SHLabel("Last 30 days")
+
+            if activity.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "calendar.badge.clock")
+                        .font(.system(size: 20))
+                        .foregroundColor(.secondary)
+                    Text("No activity yet")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 100)
+            } else {
+                // Activity bar chart
+                SHCard {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .bottom, spacing: 2) {
+                            ForEach(filled) { day in
+                                VStack(spacing: 2) {
+                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                        .fill(day.count > 0 ? Theme.accent : Theme.muted)
+                                        .frame(height: max(2, CGFloat(day.count) / CGFloat(maxCount) * 60))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .help("\(day.date.formatted(date: .abbreviated, time: .omitted)): \(day.count) observations")
+                            }
+                        }
+                        .frame(height: 64)
+
+                        HStack {
+                            Text("30d ago")
+                                .font(.system(size: 8))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("Today")
+                                .font(.system(size: 8))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                HStack(spacing: 12) {
+                    memoryStatItem(value: "\(total)", label: "observations")
+                    memoryStatItem(value: "\(activeDays)", label: "active days")
+                    memoryStatItem(value: String(format: "%.1f", Double(total) / max(1, Double(activeDays))), label: "avg/day")
+                }
+            }
+        }
+    }
+
+    private func filledActivity(_ activity: [DailyActivity]) -> [DailyActivity] {
+        guard let first = activity.first else { return [] }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let start = calendar.startOfDay(for: first.date)
+        let lookup = Dictionary(uniqueKeysWithValues: activity.map {
+            (calendar.startOfDay(for: $0.date), $0.count)
+        })
+
+        var result: [DailyActivity] = []
+        var current = start
+        while current <= today {
+            result.append(DailyActivity(date: current, count: lookup[current] ?? 0))
+            current = calendar.date(byAdding: .day, value: 1, to: current) ?? today.addingTimeInterval(86400)
+        }
+        return result
+    }
+
+    private func memoryStatItem(value: String, label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Project summaries
+
+    @ViewBuilder
+    private var memoryProjectsView: some View {
+        if manager.memoryManager.projectSummaries.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .font(.system(size: 20))
+                    .foregroundColor(.secondary)
+                Text("No projects found")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 100)
+        } else {
+            VStack(spacing: 6) {
+                ForEach(manager.memoryManager.projectSummaries) { summary in
+                    projectSummaryRow(summary)
+                }
+            }
+        }
+    }
+
+    private func projectSummaryRow(_ summary: ProjectSummary) -> some View {
+        SHCard {
+            VStack(alignment: .leading, spacing: 6) {
+                // Header
+                HStack {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.accent)
+                    Text(summary.displayName)
+                        .font(.system(size: 11, weight: .semibold))
+                    Spacer()
+                    Text("\(summary.totalObservations) obs")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+
+                // Last active
+                Text("Last active: \(summary.lastActive.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+
+                // Key facts
+                if !summary.allFacts.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Key facts")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        ForEach(summary.allFacts.prefix(5), id: \.self) { fact in
+                            HStack(alignment: .top, spacing: 4) {
+                                Text("•")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(Theme.accent)
+                                Text(fact)
+                                    .font(.system(size: 10))
+                                    .lineLimit(1)
+                            }
+                        }
+                        if summary.allFacts.count > 5 {
+                            Text("+\(summary.allFacts.count - 5) more facts")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Concepts
+                if !summary.allConcepts.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(summary.allConcepts.prefix(4), id: \.self) { concept in
+                            memoryTag(concept, icon: "tag")
+                        }
+                        if summary.allConcepts.count > 4 {
+                            Text("+\(summary.allConcepts.count - 4)")
+                                .font(.system(size: 8))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Files
+                if !summary.allFiles.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Files (\(summary.allFiles.count))")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        ForEach(summary.allFiles.prefix(5), id: \.self) { file in
+                            Button {
+                                openFileInFinder(file)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "doc.text")
+                                        .font(.system(size: 8))
+                                    Text((file as NSString).lastPathComponent)
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .lineLimit(1)
+                                }
+                                .foregroundColor(.blue)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if summary.allFiles.count > 5 {
+                            Text("+\(summary.allFiles.count - 5) more files")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // Actions
+                HStack(spacing: 8) {
+                    Button {
+                        manager.memoryManager.selectedProject = summary.project
+                        memorySection = .list
+                        manager.memoryManager.refresh()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "list.bullet")
+                                .font(.system(size: 8))
+                            Text("View memories")
+                                .font(.system(size: 9))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.blue)
+
+                    Button {
+                        let md = manager.memoryManager.exportProjectAsMarkdown(project: summary.project)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(md, forType: .string)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 8))
+                            Text("Copy Markdown")
+                                .font(.system(size: 9))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.blue)
+
+                    Button {
+                        openFileInFinder(summary.project)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 8))
+                            Text("Open in Finder")
+                                .font(.system(size: 9))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.blue)
+                }
+            }
+        }
+    }
+
+    // MARK: - Memory helpers
 
     private func memoryTag(_ text: String, icon: String) -> some View {
         HStack(spacing: 2) {
@@ -1977,8 +2389,20 @@ struct MenuBarView: View {
     }
 
     private func projectDisplayName(_ path: String) -> String {
-        // Extract last path component for display
         (path as NSString).lastPathComponent
+    }
+
+    private func openFileInFinder(_ path: String) {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            // Try to open parent directory
+            let parent = url.deletingLastPathComponent()
+            if FileManager.default.fileExists(atPath: parent.path) {
+                NSWorkspace.shared.activateFileViewerSelecting([parent])
+            }
+        }
     }
 
     // MARK: - Helpers

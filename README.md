@@ -154,6 +154,10 @@ git tag v2.8.0 && git push origin v2.8.0
 
 ## Changelog
 
+### v2.15.0
+- **Fixed**: Memory tab now reads correct claude-mem schema (`observations` table)
+- **New**: Activity timeline, project summaries, Markdown export, delete observations, open files in Finder
+
 ### v2.14.0
 - **New**: Memory tab — browse claude-mem persistent memories with search, project filter, and install guide
 
