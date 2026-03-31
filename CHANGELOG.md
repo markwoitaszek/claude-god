@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.19.2] - 2026-03-31
+
+### Fixed
+- App no longer stops refreshing after Mac sleep/wake — timers are recreated on wake
+- Disabled App Nap so refresh timers are never paused by macOS
+- Auto-refresh when opening the popover if data is older than 2 minutes
+- `isLoading` stuck state: safety timeout after 30s, reset on wake, and proper handling when access token is nil
+- 401/403 token refresh no longer enters infinite retry loop
+
 ## [2.19.1] - 2026-03-21
 
 ### Fixed

@@ -202,6 +202,7 @@ class UsageManager: ObservableObject {
 
     @Published var quotas: [UsageQuota] = []
     @Published var isLoading = false
+    private var loadingStartedAt: Date?
     @Published var errorMessage: String?
     @Published var lastRefresh: Date?
     @Published var timeUntilReset: String = "—"
@@ -617,6 +618,8 @@ class UsageManager: ObservableObject {
         setupCountdownTimer()
         setupAutoRefresh()
         setupActiveSessionDetection()
+        setupWakeObserver()
+        disableAppNap()
         isGitAvailable = GitAnalyzer.isGitAvailable()
 
         if notificationsEnabled {
@@ -896,6 +899,14 @@ class UsageManager: ObservableObject {
         refreshInternal()
     }
 
+    /// Refresh if data is older than 2 minutes (called on popover appear)
+    func refreshIfStale() {
+        let staleThreshold: TimeInterval = 120
+        if let last = lastRefresh, Date().timeIntervalSince(last) < staleThreshold { return }
+        Log.info("Data stale (>2min) — auto-refreshing on popover open")
+        refresh()
+    }
+
     /// Auto-refresh — respects rate limit cooldown
     func autoRefresh() {
         if let until = rateLimitedUntil, Date() < until {
@@ -910,6 +921,12 @@ class UsageManager: ObservableObject {
     }
 
     private func refreshInternal() {
+        // Safety: if isLoading has been stuck for >30s, force-reset it
+        if isLoading, let started = loadingStartedAt, Date().timeIntervalSince(started) > 30 {
+            Log.warn("isLoading was stuck for >30s — force-resetting")
+            isLoading = false
+            loadingStartedAt = nil
+        }
         guard !isLoading else { return }
         guard isAuthenticated, auth.accessToken != nil else {
             errorMessage = "Not authenticated — run `claude login` in Terminal"
@@ -918,6 +935,7 @@ class UsageManager: ObservableObject {
 
         if auth.tokenNeedsRefresh && auth.refreshToken != nil {
             isLoading = true
+            loadingStartedAt = Date()
             errorMessage = nil
             if isRefreshingToken {
                 // Already refreshing — queue this request to avoid duplicate token refreshes
@@ -952,6 +970,7 @@ class UsageManager: ObservableObject {
         }
 
         isLoading = true
+        loadingStartedAt = Date()
         errorMessage = nil
         fetchUsage()
     }
@@ -959,7 +978,11 @@ class UsageManager: ObservableObject {
     // MARK: - Fetch with retry
 
     private func fetchUsage(retryCount: Int = 0) {
-        guard let token = auth.accessToken else { return }
+        guard let token = auth.accessToken else {
+            isLoading = false
+            errorMessage = "No access token — run `claude login`"
+            return
+        }
 
         var request = URLRequest(url: Self.usageURL)
         request.httpMethod = "GET"
@@ -1023,11 +1046,11 @@ class UsageManager: ObservableObject {
                     self.updateWidgetData()
 
                 case 401, 403:
-                    if self.auth.refreshToken != nil {
+                    if self.auth.refreshToken != nil && retryCount == 0 {
                         Log.info("Got \(httpResponse.statusCode), attempting token refresh...")
                         self.auth.reloadCredentials { success in
                             if success {
-                                self.fetchUsage()
+                                self.fetchUsage(retryCount: retryCount + 1)
                             } else {
                                 DispatchQueue.main.async {
                                     self.isLoading = false
@@ -1193,6 +1216,37 @@ class UsageManager: ObservableObject {
         .sink { [weak self] _ in
             self?.autoRefresh()
             self?.refreshStats()
+        }
+    }
+
+    // MARK: - Wake & App Nap
+
+    private var appNapActivity: NSObjectProtocol?
+
+    private func disableAppNap() {
+        appNapActivity = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Keep refresh timers alive"
+        )
+    }
+
+    private func setupWakeObserver() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Log.info("System wake detected — refreshing timers and data")
+            // Force-reset isLoading in case it was stuck during sleep
+            self.isLoading = false
+            self.loadingStartedAt = nil
+            // Recreate timers (they may have drifted or died during sleep)
+            self.setupCountdownTimer()
+            self.setupAutoRefresh()
+            self.setupActiveSessionDetection()
+            // Refresh data
+            self.refresh()
         }
     }
 

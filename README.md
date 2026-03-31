@@ -164,6 +164,9 @@ git tag v2.8.0 && git push origin v2.8.0
 
 ## Changelog
 
+### v2.19.2
+- **Fixed**: App no longer stops refreshing after sleep/wake, disabled App Nap, auto-refresh on popover open, isLoading stuck safety, 401 retry loop
+
 ### v2.19.0
 - **Perf**: JSONL parsing without Data→String roundtrip, SQLite 9→4 queries, widget skip unchanged, keychain off main thread
 

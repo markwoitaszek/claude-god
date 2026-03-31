@@ -93,6 +93,9 @@ struct MenuBarView: View {
         .frame(width: manager.compactMode && !manager.showSettings && manager.selectedTab == .usage ? 300 : 400)
         .animation(.easeOut(duration: 0.15), value: manager.selectedTab)
         .animation(.easeOut(duration: 0.15), value: manager.showSettings)
+        .onAppear {
+            manager.refreshIfStale()
+        }
     }
 
     // MARK: - Header
