@@ -19,16 +19,26 @@ struct ClaudeGodApp: App {
             MenuBarView(manager: manager)
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: manager.menuBarIcon)
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(manager.menuBarIconColor.opacity(manager.menuBarIconOpacity))
+                if manager.menuBarDisplayMode == .iconPlus {
+                    // Apple Watch-style concentric rings
+                    MenuBarRingView(
+                        quotas: manager.quotas,
+                        labels: manager.ringStatLabels
+                    )
+                } else {
+                    Image(systemName: manager.menuBarIcon)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(manager.menuBarIconColor.opacity(manager.menuBarIconOpacity))
+                }
                 if manager.isSessionActive {
                     Circle()
                         .fill(.green)
                         .frame(width: 5, height: 5)
                 }
-                Text(manager.menuBarTitle)
-                    .monospacedDigit()
+                if !manager.menuBarTitle.isEmpty {
+                    Text(manager.menuBarTitle)
+                        .monospacedDigit()
+                }
             }
         }
         .menuBarExtraStyle(.window)

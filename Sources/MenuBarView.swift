@@ -392,6 +392,64 @@ struct MenuBarView: View {
                 }
             }
 
+            // Icon+ ring configuration
+            if manager.menuBarDisplayMode == .iconPlus {
+                SHCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SHLabel("Icon+ Rings")
+                        Text("Choose up to 3 quotas to display as concentric activity rings.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+
+                        let quotaOptions: [String] = manager.quotas.map(\.label)
+
+                        ForEach(0..<3, id: \.self) { i in
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(MenuBarRingView.ringColors[i])
+                                    .frame(width: 8, height: 8)
+                                Text("Ring \(i + 1)")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .frame(width: 44, alignment: .leading)
+                                Spacer()
+                                let slotBinding = Binding<String>(
+                                    get: {
+                                        i < manager.ringStatLabels.count
+                                            ? manager.ringStatLabels[i] : ""
+                                    },
+                                    set: { newVal in
+                                        var labels = manager.ringStatLabels
+                                        while labels.count <= i { labels.append("") }
+                                        labels[i] = newVal
+                                        manager.ringStatLabels = labels
+                                    }
+                                )
+                                Picker("", selection: slotBinding) {
+                                    Text("None").tag("")
+                                    if quotaOptions.isEmpty {
+                                        Text("Loading…").disabled(true)
+                                    } else {
+                                        ForEach(quotaOptions, id: \.self) { label in
+                                            Text(label).tag(label)
+                                        }
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(maxWidth: 160)
+                            }
+                        }
+
+                        Divider()
+
+                        // Live preview
+                        RingSettingsPreview(
+                            quotas: manager.quotas,
+                            labels: manager.ringStatLabels
+                        )
+                    }
+                }
+            }
+
             // Custom alert rules
             SHCard {
                 VStack(alignment: .leading, spacing: 8) {

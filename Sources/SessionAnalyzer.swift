@@ -26,6 +26,7 @@ enum UDKey {
     static let widgetTodayMessages = "widgetTodayMessages"
     static let widgetLastUpdate = "widgetLastUpdate"
     static let windowHeight = "windowHeight"
+    static let ringStatLabels = "ringStatLabels"
 }
 
 // MARK: - Logging

@@ -34,6 +34,7 @@ enum RefreshInterval: Int, CaseIterable, Identifiable {
 
 enum MenuBarDisplayMode: Int, CaseIterable, Identifiable {
     case iconOnly = 0
+    case iconPlus = 4          // Apple Watch-style concentric rings
     case percentage = 1
     case percentageAndTimer = 2
     case allQuotas = 3
@@ -43,6 +44,7 @@ enum MenuBarDisplayMode: Int, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .iconOnly: return "Icon"
+        case .iconPlus: return "Icon+"
         case .percentage: return "Session"
         case .percentageAndTimer: return "Timer"
         case .allQuotas: return "All"
@@ -52,6 +54,7 @@ enum MenuBarDisplayMode: Int, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .iconOnly: return "C"
+        case .iconPlus: return "◎ activity rings"
         case .percentage: return "C 15%"
         case .percentageAndTimer: return "C 15% · 2h31m"
         case .allQuotas: return "C 15% | 31% | 22%"
@@ -389,6 +392,16 @@ class UsageManager: ObservableObject {
         }
     }
 
+    /// Up to 3 quota labels displayed as concentric rings in Icon+ mode.
+    /// Empty string = ring slot unused.
+    @Published var ringStatLabels: [String] {
+        didSet {
+            if let data = try? JSONEncoder().encode(ringStatLabels) {
+                UserDefaults.standard.set(data, forKey: UDKey.ringStatLabels)
+            }
+        }
+    }
+
     // MARK: - Propriétés calculées
 
     var primaryQuota: UsageQuota? {
@@ -402,7 +415,7 @@ class UsageManager: ObservableObject {
 
     var menuBarTitle: String {
         switch menuBarDisplayMode {
-        case .iconOnly:
+        case .iconOnly, .iconPlus:
             return ""
         case .percentage:
             guard let q = primaryQuota else { return "—" }
@@ -675,6 +688,14 @@ class UsageManager: ObservableObject {
         let savedDisplayMode = ud.integer(forKey: UDKey.menuBarDisplayMode)
         self.menuBarDisplayMode = MenuBarDisplayMode(rawValue: savedDisplayMode) ?? .percentageAndTimer
         self.dailyBudget = ud.double(forKey: UDKey.dailyBudget)
+
+        // Load ring stat labels for Icon+ mode
+        if let data = ud.data(forKey: UDKey.ringStatLabels),
+           let decoded = try? JSONDecoder().decode([String].self, from: data) {
+            self.ringStatLabels = decoded
+        } else {
+            self.ringStatLabels = ["Session (5h)", "Opus (7d)", "Sonnet (7d)"]
+        }
 
         // Load per-project budgets
         if let data = ud.data(forKey: UDKey.projectBudgets),
