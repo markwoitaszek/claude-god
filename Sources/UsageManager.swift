@@ -375,6 +375,9 @@ class UsageManager: ObservableObject {
     }
     @Published var isAutoReconnecting = false
     @Published var terminalSession: TerminalSession? = nil
+    /// Set to true after auto-reconnect times out so we don't spam Safari tabs.
+    /// Cleared when the user manually triggers Sign In or credentials are refreshed.
+    private var reconnectExhausted = false
 
     @Published var menuBarDisplayMode: MenuBarDisplayMode {
         didSet {
@@ -751,12 +754,13 @@ class UsageManager: ObservableObject {
                 guard let self else { return }
                 // Don't re-enter refresh loop while token is expired — causes rapid flicker
                 if self.auth.tokenExpired {
-                    if self.autoReconnect && !self.isAutoReconnecting {
+                    if self.autoReconnect && !self.isAutoReconnecting && !self.reconnectExhausted {
                         self.launchAutoReconnect()
                     }
                     return
                 }
                 if self.isAuthenticated && !self.isLoading && (self.quotas.isEmpty || self.errorMessage != nil) {
+                    self.reconnectExhausted = false   // fresh credentials — allow future auto-reconnects
                     self.showSettings = false
                     self.refresh()
                 }
@@ -1048,6 +1052,7 @@ class UsageManager: ObservableObject {
     func launchAutoReconnect() {
         guard !isAutoReconnecting else { return }
         isAutoReconnecting = true
+        reconnectExhausted = false   // manual trigger always allowed
         errorMessage = nil
         Log.info("Auto-reconnect: starting embedded terminal session")
 
@@ -1093,6 +1098,7 @@ class UsageManager: ObservableObject {
                         Log.info("Auto-reconnect: fresh credentials detected after \(elapsed)s, resuming")
                         self.reconnectPollTimer?.cancel()
                         self.reconnectPollTimer = nil
+                        self.reconnectExhausted = false
                         self.finishReconnect()
                         self.refresh()
                     } else if elapsed >= 120 {
@@ -1100,6 +1106,7 @@ class UsageManager: ObservableObject {
                         self.reconnectPollTimer?.cancel()
                         self.reconnectPollTimer = nil
                         self.finishReconnect()
+                        self.reconnectExhausted = true   // stop the tab-spam loop
                         self.errorMessage = "Session expired — run `claude auth login` in Terminal"
                     }
                 }
