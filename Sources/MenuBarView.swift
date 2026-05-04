@@ -82,7 +82,8 @@ struct MenuBarView: View {
                 .padding(.vertical, 12)
             }
             .frame(minHeight: 0, maxHeight: .infinity)
-            .background(WindowResizer(windowHeight: $manager.windowHeight))
+
+            ResizeHandle(height: $manager.windowHeight, minHeight: 400, maxHeight: 1400)
 
             SHDivider()
 
@@ -3969,43 +3970,45 @@ struct HeatmapGrid: View {
     }
 }
 
-// MARK: - Window resizer
+// MARK: - Resize handle
 
-/// Makes the MenuBarExtra window resizable by the user and persists the height.
-struct WindowResizer: NSViewRepresentable {
-    @Binding var windowHeight: Double
+/// A small drag handle inserted into the popover layout. SwiftUI's `.frame(height:)`
+/// already drives the MenuBarExtra(.window) panel height, so dragging this handle
+/// makes the popover grow / shrink directly — no NSWindow style-mask hackery.
+struct ResizeHandle: View {
+    @Binding var height: Double
+    let minHeight: Double
+    let maxHeight: Double
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            guard let window = view.window else { return }
-            window.styleMask.insert(.resizable)
-            window.minSize = NSSize(width: 300, height: 400)
-            window.maxSize = NSSize(width: 600, height: 1400)
-            // Allow window to shrink below content's natural height so scrolling kicks in
-            window.contentView?.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-            window.contentView?.setContentHuggingPriority(.defaultLow, for: .vertical)
-            NotificationCenter.default.addObserver(
-                context.coordinator,
-                selector: #selector(Coordinator.windowDidResize(_:)),
-                name: NSWindow.didResizeNotification,
-                object: window
-            )
+    @State private var dragStartHeight: Double?
+    @State private var isHovering = false
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            Capsule()
+                .fill(Color.secondary.opacity(isHovering ? 0.55 : 0.25))
+                .frame(width: 32, height: 4)
         }
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(windowHeight: $windowHeight) }
-
-    class Coordinator: NSObject {
-        @Binding var windowHeight: Double
-        init(windowHeight: Binding<Double>) { _windowHeight = windowHeight }
-
-        @objc func windowDidResize(_ notification: Notification) {
-            guard let window = notification.object as? NSWindow else { return }
-            DispatchQueue.main.async { self.windowHeight = Double(window.frame.height) }
+        .frame(maxWidth: .infinity)
+        .frame(height: 10)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovering = hovering
+            if hovering { NSCursor.resizeUpDown.push() }
+            else { NSCursor.pop() }
         }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let start = dragStartHeight ?? height
+                    if dragStartHeight == nil { dragStartHeight = start }
+                    let proposed = start + Double(value.translation.height)
+                    height = max(minHeight, min(maxHeight, proposed))
+                }
+                .onEnded { _ in
+                    dragStartHeight = nil
+                }
+        )
     }
 }
