@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.22.0] - 2026-05-04
+
+### Added
+- **Rings menu bar mode** — Apple Watch-style concentric activity rings showing up to 3 quotas at a glance, with a small "C" in the center. Configurable in Settings (pick which quotas to display) with a live legend preview. A virtual "Timer" ring option fills as the 5h session window progresses toward reset. Uses `NSImage` + `NSBezierPath` for full-color rendering in the menu bar (SwiftUI Canvas/Circle render as templates in `MenuBarExtra` labels), with appearance-aware background tinting for legibility on light menu bars ([#20](https://github.com/Lcharvol/Claude-God/pull/20))
+
 ## [2.21.1] - 2026-05-04
 
 ### Fixed

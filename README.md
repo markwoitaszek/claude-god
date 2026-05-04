@@ -164,6 +164,9 @@ git tag v2.8.0 && git push origin v2.8.0
 
 ## Changelog
 
+### v2.22.0
+- **New**: Rings menu bar mode — Apple Watch-style concentric activity rings for up to 3 quotas, configurable picker + live preview, optional Timer ring ([#20](https://github.com/Lcharvol/Claude-God/pull/20))
+
 ### v2.21.1
 - **Fixed**: Drastic energy savings — App Nap re-enabled, adaptive countdown, slower active-session polling, JSONL scan deferred to popover open ([#14](https://github.com/Lcharvol/Claude-God/issues/14))
 - **Fixed**: Widget extension now registers — added missing `NSExtensionPointIdentifier` ([#13](https://github.com/Lcharvol/Claude-God/issues/13))
