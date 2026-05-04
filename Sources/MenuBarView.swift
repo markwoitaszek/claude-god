@@ -266,7 +266,7 @@ struct MenuBarView: View {
             SHCard {
                 VStack(alignment: .leading, spacing: 8) {
                     SHLabel("Authentication")
-                    if manager.isAuthenticated {
+                    if manager.isAuthenticated && !manager.auth.tokenExpired {
                         HStack(spacing: 8) {
                             SHBadge(text: "Connected", color: .green)
                             Spacer()
@@ -276,16 +276,20 @@ struct MenuBarView: View {
                         }
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
-                            SHBadge(text: "Not connected", color: .orange)
-                            Text("Run `claude auth login` in Terminal")
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                            SHButton(label: "Retry", icon: "arrow.clockwise", style: .outline) {
-                                manager.loadCredentials()
-                                if manager.isAuthenticated {
-                                    manager.showSettings = false
-                                    manager.refresh()
-                                }
+                            SHBadge(
+                                text: manager.isAuthenticated ? "Session expired" : "Not connected",
+                                color: .orange
+                            )
+                            SHButton(
+                                label: manager.isAutoReconnecting ? "Signing in..." : "Sign In",
+                                icon: manager.isAutoReconnecting ? "arrow.triangle.2.circlepath" : "person.crop.circle.badge.plus",
+                                style: .outline
+                            ) {
+                                manager.launchAutoReconnect()
+                            }
+                            .disabled(manager.isAutoReconnecting)
+                            if let session = manager.terminalSession {
+                                EmbeddedTerminalView(session: session)
                             }
                         }
                     }
@@ -486,6 +490,27 @@ struct MenuBarView: View {
                         .font(.system(size: 12))
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                    SHDivider()
+                    Toggle("Auto-reconnect when session expires", isOn: $manager.autoReconnect)
+                        .font(.system(size: 12))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    if manager.autoReconnect {
+                        Text("Automatically opens browser sign-in when your token expires.")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if manager.auth.tokenExpired {
+                        SHButton(
+                            label: manager.isAutoReconnecting ? "Reconnecting..." : "Reconnect now",
+                            icon: manager.isAutoReconnecting ? "arrow.triangle.2.circlepath" : "person.crop.circle.badge.plus",
+                            style: .outline
+                        ) {
+                            manager.launchAutoReconnect()
+                        }
+                        .disabled(manager.isAutoReconnecting)
+                    }
                 }
             }
 
@@ -1721,31 +1746,41 @@ struct MenuBarView: View {
         let isAuth = !isRateLimit && (error.contains("login") || error.contains("expired") || error.contains("authenticated"))
         let isNetwork = error.contains("Network") || error.contains("connection")
 
-        return SHCard {
-            HStack(spacing: 10) {
-                Image(systemName: isAuth ? "key.fill" : isRateLimit ? "clock.fill" : "exclamationmark.triangle")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(isRateLimit ? .blue : .orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(error)
-                        .font(.system(size: 12, weight: .medium))
-                    Text(isAuth ? "Run `claude auth login` in Terminal" :
-                         isNetwork ? "Check your internet connection" :
-                         isRateLimit ? "Will auto-retry shortly" :
-                         "Try refreshing or check settings")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                if isAuth {
-                    SHButton(label: "Settings", icon: "gearshape", style: .outline) {
-                        manager.showSettings = true
+        return VStack(spacing: 6) {
+            SHCard {
+                HStack(spacing: 10) {
+                    Image(systemName: isAuth ? "key.fill" : isRateLimit ? "clock.fill" : "exclamationmark.triangle")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(isRateLimit ? .blue : .orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(error)
+                            .font(.system(size: 12, weight: .medium))
+                        Text(isAuth ? (manager.isAutoReconnecting ? "Waiting for browser sign-in..." : "Session expired") :
+                             isNetwork ? "Check your internet connection" :
+                             isRateLimit ? "Will auto-retry shortly" :
+                             "Try refreshing or check settings")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
                     }
-                } else {
-                    SHButton(label: "Retry", icon: "arrow.clockwise", style: .outline) {
-                        manager.refresh()
+                    Spacer()
+                    if isAuth {
+                        SHButton(
+                            label: manager.isAutoReconnecting ? "Signing in..." : "Sign In",
+                            icon: manager.isAutoReconnecting ? "arrow.triangle.2.circlepath" : "person.crop.circle.badge.plus",
+                            style: .outline
+                        ) {
+                            manager.launchAutoReconnect()
+                        }
+                        .disabled(manager.isAutoReconnecting)
+                    } else {
+                        SHButton(label: "Retry", icon: "arrow.clockwise", style: .outline) {
+                            manager.refresh()
+                        }
                     }
                 }
+            }
+            if isAuth, let session = manager.terminalSession {
+                EmbeddedTerminalView(session: session)
             }
         }
     }
@@ -3393,6 +3428,70 @@ struct MenuBarView: View {
         let minutes = (Int(remaining) % 3600) / 60
         if hours > 0 { return "in \(hours)h \(minutes)m" }
         return "in \(minutes)m"
+    }
+}
+
+// ============================================================
+// MARK: - Embedded Terminal
+// ============================================================
+
+struct EmbeddedTerminalView: View {
+    @ObservedObject var session: TerminalSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Title bar
+            HStack(spacing: 6) {
+                Circle().fill(Color.red.opacity(0.8)).frame(width: 8, height: 8)
+                Circle().fill(Color.yellow.opacity(0.8)).frame(width: 8, height: 8)
+                Circle().fill(Color.green.opacity(0.8)).frame(width: 8, height: 8)
+                Text("claude auth login")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.5))
+                Spacer()
+                if session.isRunning {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 5, height: 5)
+                        Text("running")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.green.opacity(0.8))
+                    }
+                } else {
+                    Text("done")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.black.opacity(0.4))
+
+            Divider().background(Color.white.opacity(0.08))
+
+            // Output
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(session.output.isEmpty ? " " : session.output)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.green.opacity(0.9))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .id("bottom")
+                }
+                .onChange(of: session.output) { _ in
+                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+            }
+            .frame(height: 130)
+        }
+        .background(Color(red: 0.05, green: 0.05, blue: 0.05))
+        .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
     }
 }
 

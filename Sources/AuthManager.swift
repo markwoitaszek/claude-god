@@ -151,6 +151,122 @@ class AuthManager: ObservableObject {
         }
     }
 
+    // MARK: - Silent token self-refresh
+
+    private static let oauthTokenURL = URL(string: "https://platform.claude.com/v1/oauth/token")!
+    private static let oauthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+    /// Attempt a silent OAuth refresh_token grant.
+    /// Writes the new tokens back to Keychain (and credentials file if present)
+    /// so Claude Code picks up the updated refresh token on its next operation.
+    func selfRefreshToken(completion: @escaping (Bool) -> Void) {
+        guard let rt = refreshToken, !rt.isEmpty else {
+            Log.warn("selfRefreshToken: no refresh token available")
+            completion(false)
+            return
+        }
+
+        Log.info("selfRefreshToken: attempting refresh_token grant")
+        var request = URLRequest(url: Self.oauthTokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("claude-code/2.1", forHTTPHeaderField: "User-Agent")
+        let body: [String: String] = [
+            "grant_type": "refresh_token",
+            "refresh_token": rt,
+            "client_id": Self.oauthClientID
+        ]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+            completion(false)
+            return
+        }
+        request.httpBody = bodyData
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self else { return }
+
+            if let error {
+                Log.error("selfRefreshToken: network error: \(error)")
+                DispatchQueue.main.async { completion(false) }
+                return
+            }
+            guard let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let newAccessToken = json["access_token"] as? String, !newAccessToken.isEmpty else {
+                let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? "(no body)"
+                Log.error("selfRefreshToken: bad response — \(body.prefix(200))")
+                DispatchQueue.main.async { completion(false) }
+                return
+            }
+
+            let newRefreshToken = json["refresh_token"] as? String ?? rt
+            let expiresIn = json["expires_in"] as? Double ?? 3600
+            let newExpiresAt = (Date().timeIntervalSince1970 + expiresIn) * 1000
+
+            DispatchQueue.main.async {
+                self.accessToken = newAccessToken
+                self.refreshToken = newRefreshToken
+                self.tokenExpiresAt = newExpiresAt
+                self.isAuthenticated = true
+                Log.info("selfRefreshToken: success — new token expires in \(Int(expiresIn))s")
+                self.persistRefreshedCredentials(
+                    accessToken: newAccessToken,
+                    refreshToken: newRefreshToken,
+                    expiresAt: newExpiresAt
+                )
+                completion(true)
+            }
+        }.resume()
+    }
+
+    /// Write refreshed tokens back to Keychain and credentials file,
+    /// preserving existing fields (subscriptionType, rateLimitTier, scopes).
+    private func persistRefreshedCredentials(accessToken: String, refreshToken: String, expiresAt: Double) {
+        DispatchQueue.global(qos: .utility).async {
+            // Read existing entry to preserve non-token fields
+            var root = Self.loadFromKeychain() ?? [:]
+            var oauth = root["claudeAiOauth"] as? [String: Any] ?? [:]
+            oauth["accessToken"] = accessToken
+            oauth["refreshToken"] = refreshToken
+            oauth["expiresAt"] = Int(expiresAt)
+            root["claudeAiOauth"] = oauth
+
+            guard let jsonData = try? JSONSerialization.data(withJSONObject: root),
+                  let jsonString = String(data: jsonData, encoding: .utf8) else {
+                Log.error("persistRefreshedCredentials: failed to serialize JSON")
+                return
+            }
+
+            // Overwrite Keychain entry
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+            p.arguments = ["add-generic-password", "-U", "-s", "Claude Code-credentials", "-a", "", "-w", jsonString]
+            p.standardError = Pipe()
+            try? p.run()
+            p.waitUntilExit()
+            if p.terminationStatus == 0 {
+                Log.info("persistRefreshedCredentials: Keychain updated")
+            } else {
+                Log.warn("persistRefreshedCredentials: Keychain update failed (status \(p.terminationStatus))")
+            }
+
+            // Also update credentials file if it exists
+            if FileManager.default.fileExists(atPath: Self.credentialsPath.path),
+               let fileData = try? Data(contentsOf: Self.credentialsPath),
+               var fileJson = try? JSONSerialization.jsonObject(with: fileData) as? [String: Any] {
+                var fileOauth = fileJson["claudeAiOauth"] as? [String: Any] ?? [:]
+                fileOauth["accessToken"] = accessToken
+                fileOauth["refreshToken"] = refreshToken
+                fileOauth["expiresAt"] = Int(expiresAt)
+                fileJson["claudeAiOauth"] = fileOauth
+                if let newData = try? JSONSerialization.data(withJSONObject: fileJson) {
+                    try? newData.write(to: Self.credentialsPath)
+                    Log.info("persistRefreshedCredentials: credentials file updated")
+                }
+            }
+        }
+    }
+
     // MARK: - Credentials file watcher
 
     func startWatchingCredentials() {

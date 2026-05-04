@@ -20,6 +20,7 @@ enum UDKey {
     static let accounts = "accounts"
     static let activeAccountIndex = "activeAccountIndex"
     static let notifiedThresholds = "notifiedThresholds"
+    static let autoReconnect = "autoReconnect"
     static let widgetQuotas = "widgetQuotas"
     static let widgetTodayCost = "widgetTodayCost"
     static let widgetTodayMessages = "widgetTodayMessages"

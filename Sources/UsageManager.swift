@@ -330,6 +330,17 @@ class UsageManager: ObservableObject {
         }
     }
 
+    @Published var autoReconnect: Bool {
+        didSet {
+            UserDefaults.standard.set(autoReconnect, forKey: UDKey.autoReconnect)
+        }
+    }
+    @Published var isAutoReconnecting = false
+    @Published var terminalSession: TerminalSession? = nil
+    /// Set to true after auto-reconnect times out so we don't spam Safari tabs.
+    /// Cleared when the user manually triggers Sign In or credentials are refreshed.
+    private var reconnectExhausted = false
+
     @Published var menuBarDisplayMode: MenuBarDisplayMode {
         didSet {
             UserDefaults.standard.set(menuBarDisplayMode.rawValue, forKey: UDKey.menuBarDisplayMode)
@@ -595,6 +606,8 @@ class UsageManager: ObservableObject {
     private var countdownTimer: AnyCancellable?
     private var autoRefreshTimer: AnyCancellable?
     private var activeSessionTimer: AnyCancellable?
+    private var reconnectPollTimer: AnyCancellable?
+    private var tokenHealthTimer: AnyCancellable?
     private var cancellables = Set<AnyCancellable>()
     private var isRefreshingToken = false
     private var tokenRefreshQueue: [(Bool) -> Void] = [] // queued callbacks for concurrent refresh requests
@@ -621,6 +634,7 @@ class UsageManager: ObservableObject {
         self.notificationThreshold = ud.object(forKey: UDKey.notificationThreshold) as? Double ?? 20.0
         self.launchAtLogin = ud.bool(forKey: UDKey.launchAtLogin)
         self.compactMode = ud.bool(forKey: UDKey.compactMode)
+        self.autoReconnect = ud.bool(forKey: UDKey.autoReconnect)
         let savedDisplayMode = ud.integer(forKey: UDKey.menuBarDisplayMode)
         self.menuBarDisplayMode = MenuBarDisplayMode(rawValue: savedDisplayMode) ?? .percentageAndTimer
         self.dailyBudget = ud.double(forKey: UDKey.dailyBudget)
@@ -699,7 +713,14 @@ class UsageManager: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 // tokenExpired guard prevents a flicker loop: fetchUsage -> reloadCredentials -> auth republishes -> sink fires again.
-                if self.isAuthenticated && !self.auth.tokenExpired && !self.isLoading && (self.quotas.isEmpty || self.errorMessage != nil) {
+                if self.auth.tokenExpired {
+                    if self.autoReconnect && !self.isAutoReconnecting && !self.reconnectExhausted {
+                        self.launchAutoReconnect()
+                    }
+                    return
+                }
+                if self.isAuthenticated && !self.isLoading && (self.quotas.isEmpty || self.errorMessage != nil) {
+                    self.reconnectExhausted = false   // fresh credentials — allow future auto-reconnects
                     self.showSettings = false
                     self.refresh()
                 }
@@ -710,6 +731,7 @@ class UsageManager: ObservableObject {
         setupAutoRefresh()
         setupActiveSessionDetection()
         setupWakeObserver()
+        setupTokenHealthTimer()
         disableAppNap()
         isGitAvailable = GitAnalyzer.isGitAvailable()
 
@@ -982,6 +1004,75 @@ class UsageManager: ObservableObject {
         }
     }
 
+    // MARK: - Auto-reconnect
+
+    /// Runs `claude auth login` in an embedded PTY inside the popover.
+    /// The browser OAuth flow still opens automatically. Once credentials appear
+    /// in Keychain, the polling loop picks them up and resumes normal operation.
+    func launchAutoReconnect() {
+        guard !isAutoReconnecting else { return }
+        isAutoReconnecting = true
+        reconnectExhausted = false   // manual trigger always allowed
+        errorMessage = nil
+        Log.info("Auto-reconnect: starting embedded terminal session")
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidatePaths = [
+            "/usr/local/bin/claude",
+            "/opt/homebrew/bin/claude",
+            "\(home)/.npm-global/bin/claude",
+            "\(home)/.local/bin/claude",
+            "/usr/bin/claude"
+        ]
+        guard let claudePath = candidatePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            Log.warn("claude binary not found — cannot auto-reconnect")
+            isAutoReconnecting = false
+            errorMessage = "Session expired — run `claude auth login` in Terminal"
+            return
+        }
+
+        let session = TerminalSession()
+        terminalSession = session
+        session.start(executablePath: claudePath, args: ["auth", "login"])
+        Log.info("Embedded terminal started — polling Keychain every 5s for new credentials")
+        startReconnectPolling()
+    }
+
+    private func finishReconnect() {
+        terminalSession?.stop()
+        terminalSession = nil
+        isAutoReconnecting = false
+    }
+
+    private func startReconnectPolling() {
+        reconnectPollTimer?.cancel()
+        var elapsed = 0
+        reconnectPollTimer = Timer.publish(every: 5, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self, self.isAutoReconnecting else { return }
+                elapsed += 5
+                self.auth.reloadCredentials { [weak self] _ in
+                    guard let self else { return }
+                    if !self.auth.tokenExpired {
+                        Log.info("Auto-reconnect: fresh credentials detected after \(elapsed)s, resuming")
+                        self.reconnectPollTimer?.cancel()
+                        self.reconnectPollTimer = nil
+                        self.reconnectExhausted = false
+                        self.finishReconnect()
+                        self.refresh()
+                    } else if elapsed >= 120 {
+                        Log.warn("Auto-reconnect: timed out (120s) waiting for credentials")
+                        self.reconnectPollTimer?.cancel()
+                        self.reconnectPollTimer = nil
+                        self.finishReconnect()
+                        self.reconnectExhausted = true   // stop the tab-spam loop
+                        self.errorMessage = "Session expired — run `claude auth login` in Terminal"
+                    }
+                }
+            }
+    }
+
     // MARK: - Actions
 
     /// Manual refresh — always clears rate limit cooldown
@@ -1052,21 +1143,39 @@ class UsageManager: ObservableObject {
                 self.finishLoading(error: "Session expired — run `claude auth login`")
                 for callback in queued { callback(false) }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
             auth.reloadCredentials { [weak self] success in
-                timeout.cancel()
                 guard let self, !didComplete else { return }
-                didComplete = true
-                self.isRefreshingToken = false
-                let queued = self.tokenRefreshQueue
-                self.tokenRefreshQueue.removeAll()
-                if success {
+
+                if success && !self.auth.tokenExpired {
+                    // Got a fresh token from file or Keychain (e.g. Claude Code refreshed it)
+                    timeout.cancel()
+                    didComplete = true
+                    self.isRefreshingToken = false
+                    let queued = self.tokenRefreshQueue
+                    self.tokenRefreshQueue.removeAll()
                     self.fetchUsage()
+                    for callback in queued { callback(true) }
                 } else {
-                    self.finishLoading(error: "Session expired — run `claude auth login`")
+                    // Token still expired — attempt silent self-refresh via OAuth refresh_token grant
+                    Log.info("Reloaded credentials still expired — attempting silent self-refresh")
+                    self.auth.selfRefreshToken { [weak self] refreshed in
+                        guard let self else { return }
+                        timeout.cancel()
+                        guard !didComplete else { return }
+                        didComplete = true
+                        self.isRefreshingToken = false
+                        let queued = self.tokenRefreshQueue
+                        self.tokenRefreshQueue.removeAll()
+                        if refreshed {
+                            self.fetchUsage()
+                            for callback in queued { callback(true) }
+                        } else {
+                            self.finishLoading(error: "Session expired — run `claude auth login`")
+                            for callback in queued { callback(false) }
+                        }
+                    }
                 }
-                // Notify queued callers
-                for callback in queued { callback(success) }
             }
             return
         }
@@ -1372,6 +1481,28 @@ class UsageManager: ObservableObject {
             self?.autoRefresh()
             self?.refreshStats()
         }
+    }
+
+    // MARK: - Proactive token health
+
+    /// Fires every 30 minutes. If the access token expires within the next hour,
+    /// silently self-refreshes via the OAuth refresh_token grant so the app
+    /// stays online without user intervention.
+    private func setupTokenHealthTimer() {
+        tokenHealthTimer?.cancel()
+        tokenHealthTimer = Timer.publish(every: 30 * 60, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self, self.isAuthenticated else { return }
+                guard let expiresAt = self.auth.tokenExpiresAt else { return }
+                let expiresDate = Date(timeIntervalSince1970: expiresAt / 1000)
+                let timeUntilExpiry = expiresDate.timeIntervalSinceNow
+                guard timeUntilExpiry < 3600 && !self.auth.tokenExpired else { return }
+                Log.info("Token health: expires in \(Int(timeUntilExpiry / 60))min — proactively refreshing")
+                self.auth.selfRefreshToken { success in
+                    Log.info("Proactive token refresh: \(success ? "succeeded" : "failed")")
+                }
+            }
     }
 
     // MARK: - Wake & App Nap
