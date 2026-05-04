@@ -37,6 +37,7 @@ enum MenuBarDisplayMode: Int, CaseIterable, Identifiable {
     case percentage = 1
     case percentageAndTimer = 2
     case allQuotas = 3
+    case sessionTimerAndWeek = 4
 
     var id: Int { rawValue }
 
@@ -46,6 +47,7 @@ enum MenuBarDisplayMode: Int, CaseIterable, Identifiable {
         case .percentage: return "Session"
         case .percentageAndTimer: return "Timer"
         case .allQuotas: return "All"
+        case .sessionTimerAndWeek: return "Session+Week"
         }
     }
 
@@ -55,7 +57,13 @@ enum MenuBarDisplayMode: Int, CaseIterable, Identifiable {
         case .percentage: return "C 15%"
         case .percentageAndTimer: return "C 15% · 2h31m"
         case .allQuotas: return "C 15% | 31% | 22%"
+        case .sessionTimerAndWeek: return "C 15% · 2h31m | W 31%"
         }
+    }
+
+    /// Modes that render a live countdown — drive a 1s tick and the compact timer format
+    var showsLiveTimer: Bool {
+        self == .percentageAndTimer || self == .sessionTimerAndWeek
     }
 }
 
@@ -354,6 +362,17 @@ class UsageManager: ObservableObject {
         quotas.max(by: { $0.utilization < $1.utilization })
     }
 
+    /// Best representation of the weekly quota: prefer the combined "Weekly (all models)",
+    /// otherwise fall back to the worst of Sonnet/Opus 7d so users on the per-model plan still see a value.
+    private var weeklyQuota: UsageQuota? {
+        if let combined = quotas.first(where: { $0.label.contains("Weekly") }) {
+            return combined
+        }
+        return quotas
+            .filter { $0.label.contains("7d") }
+            .max(by: { $0.utilization < $1.utilization })
+    }
+
     var menuBarTitle: String {
         switch menuBarDisplayMode {
         case .iconOnly:
@@ -368,6 +387,11 @@ class UsageManager: ObservableObject {
         case .allQuotas:
             if quotas.isEmpty { return "—" }
             return quotas.map { "\(Int($0.utilization))%" }.joined(separator: " | ")
+        case .sessionTimerAndWeek:
+            guard let session = primaryQuota else { return "—" }
+            let timer = timeUntilReset == "—" ? "" : " · \(timeUntilReset)"
+            let week = weeklyQuota.map { " | W \(Int($0.utilization))%" } ?? ""
+            return "\(Int(session.utilization))%\(timer)\(week)"
         }
     }
 
@@ -1304,7 +1328,7 @@ class UsageManager: ObservableObject {
 
     private func setupCountdownTimer() {
         countdownTimer?.cancel()
-        let interval: TimeInterval = menuBarDisplayMode == .percentageAndTimer ? 1 : 30
+        let interval: TimeInterval = menuBarDisplayMode.showsLiveTimer ? 1 : 30
         countdownTimer = Timer.publish(every: interval, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
@@ -1332,7 +1356,7 @@ class UsageManager: ObservableObject {
         let hours = (Int(remaining) % 86400) / 3600
         let minutes = (Int(remaining) % 3600) / 60
         let newValue: String
-        if menuBarDisplayMode == .percentageAndTimer {
+        if menuBarDisplayMode.showsLiveTimer {
             // Keep menu bar compact
             if days > 0 {
                 newValue = "\(days)d\(String(format: "%02d", hours))h"
