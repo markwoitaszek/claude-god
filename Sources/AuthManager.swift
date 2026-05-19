@@ -169,18 +169,14 @@ class AuthManager: ObservableObject {
         Log.info("selfRefreshToken: attempting refresh_token grant")
         var request = URLRequest(url: Self.oauthTokenURL)
         request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("claude-code/2.1", forHTTPHeaderField: "User-Agent")
-        let body: [String: String] = [
-            "grant_type": "refresh_token",
-            "refresh_token": rt,
-            "client_id": Self.oauthClientID
-        ]
-        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
-            completion(false)
-            return
-        }
-        request.httpBody = bodyData
+        // RFC 6749 §6 requires form-encoded bodies for token endpoint requests.
+        var allowedChars = CharacterSet.alphanumerics
+        allowedChars.insert(charactersIn: "-._~")
+        let encodedToken = rt.addingPercentEncoding(withAllowedCharacters: allowedChars) ?? rt
+        let bodyString = "grant_type=refresh_token&refresh_token=\(encodedToken)&client_id=\(Self.oauthClientID)"
+        request.httpBody = bodyString.data(using: .utf8)
 
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self else { return }

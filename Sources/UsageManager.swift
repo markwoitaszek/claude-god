@@ -703,6 +703,7 @@ class UsageManager: ObservableObject {
     private var activeSessionTimer: AnyCancellable?
     private var reconnectPollTimer: AnyCancellable?
     private var tokenHealthTimer: AnyCancellable?
+    private var expiredCredentialTimer: AnyCancellable?
     private var cancellables = Set<AnyCancellable>()
     private var isRefreshingToken = false
     private var tokenRefreshQueue: [(Bool) -> Void] = [] // queued callbacks for concurrent refresh requests
@@ -822,6 +823,9 @@ class UsageManager: ObservableObject {
                     if self.autoReconnect && !self.isAutoReconnecting && !self.reconnectExhausted {
                         self.launchAutoReconnect()
                     }
+                    // Poll credentials in the background so a manual `claude auth login`
+                    // in any terminal is picked up without the user clicking Sign In.
+                    self.startExpiredCredentialPolling()
                     return
                 }
                 if self.isAuthenticated && !self.isLoading && (self.quotas.isEmpty || self.errorMessage != nil) {
@@ -1140,12 +1144,20 @@ class UsageManager: ObservableObject {
             "/opt/homebrew/bin/claude",
             "\(home)/.npm-global/bin/claude",
             "\(home)/.local/bin/claude",
+            "\(home)/.local/share/fnm/aliases/default/bin/claude",
             "/usr/bin/claude"
         ]
-        guard let claudePath = candidatePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+        var claudePath = candidatePaths.first(where: { FileManager.default.fileExists(atPath: $0) })
+
+        if claudePath == nil {
+            // Fallback: ask the user's login shell where claude lives
+            claudePath = Self.resolveClaudeBinaryViaShell()
+        }
+
+        guard let claudePath else {
             Log.warn("claude binary not found — cannot auto-reconnect")
             isAutoReconnecting = false
-            errorMessage = "Session expired — run `claude auth login` in Terminal"
+            errorMessage = "Claude CLI not found. Install it with `npm i -g @anthropic-ai/claude-code`, then run `claude auth login` in Terminal."
             return
         }
 
@@ -1160,6 +1172,53 @@ class UsageManager: ObservableObject {
         terminalSession?.stop()
         terminalSession = nil
         isAutoReconnecting = false
+    }
+
+    /// Resolve the `claude` binary by running `which claude` in the user's login shell.
+    /// Covers nvm, fnm, volta, pnpm global, and other non-standard install locations.
+    private static func resolveClaudeBinaryViaShell() -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: shell)
+        p.arguments = ["-l", "-c", "which claude"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do {
+            try p.run()
+            p.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard p.terminationStatus == 0 else { return nil }
+        let raw = pipe.fileHandleForReading.readDataToEndOfFile()
+        let path = String(data: raw, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return path.isEmpty ? nil : path
+    }
+
+    /// Poll credentials every 10 seconds when the token is expired but no reconnect flow is running.
+    /// This picks up tokens written by a manual `claude auth login` in any terminal.
+    private func startExpiredCredentialPolling() {
+        expiredCredentialTimer?.cancel()
+        expiredCredentialTimer = Timer.publish(every: 10, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                guard self.auth.tokenExpired, !self.isAutoReconnecting else {
+                    self.expiredCredentialTimer?.cancel()
+                    self.expiredCredentialTimer = nil
+                    return
+                }
+                self.auth.reloadCredentials { [weak self] _ in
+                    guard let self, !self.auth.tokenExpired else { return }
+                    Log.info("Expired credential poller: fresh credentials detected, resuming")
+                    self.expiredCredentialTimer?.cancel()
+                    self.expiredCredentialTimer = nil
+                    self.reconnectExhausted = false
+                    self.errorMessage = nil
+                    self.refresh()
+                }
+            }
     }
 
     private func startReconnectPolling() {
@@ -1492,6 +1551,9 @@ class UsageManager: ObservableObject {
         isLoading = false
         loadingStartedAt = nil
         errorMessage = error
+        if let error, (error.contains("expired") || error.contains("login") || error.contains("authenticated")) {
+            startExpiredCredentialPolling()
+        }
     }
 
     // MARK: - Response parsing (Codable)
