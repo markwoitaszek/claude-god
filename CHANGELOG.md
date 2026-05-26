@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.22.1] - 2026-05-26
+
+### Fixed
+- **OAuth token self-refresh returning HTTP 400** — `selfRefreshToken` now sends `application/x-www-form-urlencoded` with proper percent-encoding (RFC 6749 §6) instead of `application/json`, so the platform token endpoint accepts the refresh grant ([#21](https://github.com/Lcharvol/Claude-God/issues/21), [#22](https://github.com/Lcharvol/Claude-God/pull/22))
+- **`claude` binary not found with nvm/fnm/volta/pnpm installs** — `launchAutoReconnect()` now falls back to `$SHELL -l -c "which claude"` when none of the hardcoded paths match, and adds the fnm default-alias path as an extra candidate. Error message also points users to `npm i -g @anthropic-ai/claude-code` when the CLI is genuinely missing
+- **No recovery after manual `claude auth login`** — added a 10s background poller (`startExpiredCredentialPolling`) that reloads credentials from file *and* Keychain when the token is expired but no embedded reconnect flow is running. macOS Keychain-only credential writes are now picked up automatically without the user clicking Sign In
+
 ## [2.22.0] - 2026-05-04
 
 ### Added

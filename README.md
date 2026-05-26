@@ -164,6 +164,11 @@ git tag v2.8.0 && git push origin v2.8.0
 
 ## Changelog
 
+### v2.22.1
+- **Fixed**: OAuth token self-refresh — now sends `application/x-www-form-urlencoded` per RFC 6749, ending the HTTP 400 loop on silent refresh ([#21](https://github.com/Lcharvol/Claude-God/issues/21), [#22](https://github.com/Lcharvol/Claude-God/pull/22))
+- **Fixed**: `claude` binary resolution — falls back to `$SHELL -l -c "which claude"` so nvm / fnm / volta / pnpm installs are found
+- **Fixed**: Auto-recovery after manual `claude auth login` — 10s background poller picks up Keychain-only credential writes without needing Sign In
+
 ### v2.22.0
 - **New**: Rings menu bar mode — Apple Watch-style concentric activity rings for up to 3 quotas, configurable picker + live preview, optional Timer ring ([#20](https://github.com/Lcharvol/Claude-God/pull/20))
 
