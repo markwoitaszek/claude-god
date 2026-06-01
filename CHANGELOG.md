@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.23.0] - 2026-06-01
+
+### Added
+- **Extra Usage surfaced as a first-class quota across the app** — enterprise/work accounts with a dollar-only budget (no token quotas) previously saw "—" in every menu bar percentage mode. Extra Usage spend/limit is now rendered as a % everywhere token quotas are: the menu bar icon color reacts to high spend (warning/critical), the "All" mode appends `E X%` alongside token percentages, Extra Usage is a selectable ring in Icon+ Rings mode, and standard "Alert when usage is high" plus custom alert rules now fire for it too. The popover's Extra Usage card also gains a color-coded progress bar and percentage when a monthly limit is set; unlimited plans keep the On/Off badge ([#25](https://github.com/Lcharvol/Claude-God/pull/25), thanks @ecoffey)
+
 ## [2.22.2] - 2026-05-26
 
 ### Changed

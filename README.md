@@ -164,6 +164,9 @@ git tag v2.8.0 && git push origin v2.8.0
 
 ## Changelog
 
+### v2.23.0
+- **New**: Extra Usage (dollar budget) is now a first-class quota across the app — surfaced as a % in every menu bar mode (including `E X%` in "All" mode), selectable as a ring in Icon+ Rings, drives icon warning/critical colors, and fires standard + custom usage alerts. The popover's Extra Usage card gains a color-coded progress bar when a monthly limit is set ([#25](https://github.com/Lcharvol/Claude-God/pull/25), thanks @ecoffey)
+
 ### v2.22.2
 - **Changed**: Peak hours window updated to Mon–Fri 5am–11am PT to match Anthropic's actual throttling band for 5-hour session limits (was 7am–5pm PT) ([#24](https://github.com/Lcharvol/Claude-God/pull/24), thanks @pieropalevsky)
 - **Refactored**: Tooltips derive from a single `peakHoursDescription` source-of-truth so future policy changes touch one constant instead of three sites
