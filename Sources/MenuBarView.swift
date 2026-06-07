@@ -94,6 +94,7 @@ struct MenuBarView: View {
         }
         .frame(width: manager.compactMode && !manager.showSettings && manager.selectedTab == .usage ? 300 : 400,
                height: manager.windowHeight)
+        .background(WindowTopAnchor(height: manager.windowHeight))
         .animation(.easeOut(duration: 0.15), value: manager.selectedTab)
         .animation(.easeOut(duration: 0.15), value: manager.showSettings)
         .onAppear {
@@ -4093,5 +4094,33 @@ struct ResizeHandle: View {
                     dragStartHeight = nil
                 }
         )
+    }
+}
+
+// MARK: - Window top-edge anchor
+
+/// Pins the top edge of the MenuBarExtra window to the status-bar item when height
+/// changes. Without this, SwiftUI resizes from the window's center point in Release
+/// builds, causing the popover to grow/shrink from both the top and bottom.
+struct WindowTopAnchor: NSViewRepresentable {
+    let height: Double
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // Defer so the SwiftUI layout pass has already applied the new frame size.
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            let current = window.frame
+            guard abs(current.height - height) > 0.5 else { return }
+            // Keep the top edge (maxY) fixed; adjust origin.y downward as height grows.
+            let newOriginY = current.maxY - height
+            window.setFrame(
+                NSRect(x: current.origin.x, y: newOriginY,
+                       width: current.width, height: height),
+                display: false,
+                animate: false
+            )
+        }
     }
 }

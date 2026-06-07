@@ -3,6 +3,7 @@
 
 import Foundation
 import Combine
+import Security
 
 // MARK: - Credential source
 
@@ -306,10 +307,22 @@ class AuthManager: ObservableObject {
 
     // MARK: - Keychain
 
-    private static func loadFromKeychain() -> [String: Any]? {
+    /// Load credentials from Keychain.
+    /// Fast path: exact "Claude Code-credentials" service. If missing or expired,
+    /// falls back to scanning all entries with that prefix (covers per-project
+    /// suffixed entries written by newer Claude Code versions).
+    static func loadFromKeychain() -> [String: Any]? {
+        if let result = loadKeychainEntry(service: "Claude Code-credentials") {
+            let expiresAt = (result["claudeAiOauth"] as? [String: Any])?["expiresAt"] as? Double ?? 0
+            if Date(timeIntervalSince1970: expiresAt / 1000) > Date() { return result }
+        }
+        return loadBestKeychainEntryWithPrefix("Claude Code-credentials")
+    }
+
+    private static func loadKeychainEntry(service: String) -> [String: Any]? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        process.arguments = ["find-generic-password", "-s", service, "-w"]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -321,7 +334,6 @@ class AuthManager: ObservableObject {
             guard process.terminationStatus == 0 else { return nil }
 
             let rawData = pipe.fileHandleForReading.readDataToEndOfFile()
-            // Trim whitespace from raw output before parsing
             guard let trimmed = String(data: rawData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
                   !trimmed.isEmpty,
@@ -333,5 +345,45 @@ class AuthManager: ObservableObject {
         } catch {
             return nil
         }
+    }
+
+    private static func loadBestKeychainEntryWithPrefix(_ prefix: String) -> [String: Any]? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
+        var raw: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &raw) == errSecSuccess,
+              let items = raw as? [[String: Any]] else { return nil }
+
+        var bestJSON: [String: Any]?
+        var bestExpiry: Double = 0
+
+        for item in items {
+            guard let service = item[kSecAttrService as String] as? String,
+                  service.hasPrefix(prefix),
+                  let data = item[kSecValueData as String] as? Data,
+                  let trimmed = String(data: data, encoding: .utf8)?
+                      .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !trimmed.isEmpty,
+                  let jsonData = trimmed.data(using: .utf8),
+                  let json = (try? JSONSerialization.jsonObject(with: jsonData)) as? [String: Any],
+                  let oauth = json["claudeAiOauth"] as? [String: Any],
+                  let token = oauth["accessToken"] as? String, !token.isEmpty
+            else { continue }
+
+            let expiresAt = oauth["expiresAt"] as? Double ?? 0
+            if expiresAt > bestExpiry {
+                bestExpiry = expiresAt
+                bestJSON = json
+            }
+        }
+
+        if bestJSON != nil {
+            Log.info("loadBestKeychainEntryWithPrefix: using suffixed entry (prefix: \(prefix))")
+        }
+        return bestJSON
     }
 }

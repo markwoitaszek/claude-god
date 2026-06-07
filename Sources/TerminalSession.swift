@@ -53,7 +53,7 @@ final class TerminalSession: ObservableObject {
         p.arguments = args
 
         // Give the process the slave end as its terminal
-        let slaveHandle = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
+        let slaveHandle = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
         p.standardInput  = slaveHandle
         p.standardOutput = slaveHandle
         p.standardError  = slaveHandle
