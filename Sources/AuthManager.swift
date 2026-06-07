@@ -312,18 +312,9 @@ class AuthManager: ObservableObject {
     /// falls back to scanning all entries with that prefix (covers per-project
     /// suffixed entries written by newer Claude Code versions).
     static func loadFromKeychain() -> [String: Any]? {
-        if let result = loadKeychainEntry(service: "Claude Code-credentials") {
-            let expiresAt = (result["claudeAiOauth"] as? [String: Any])?["expiresAt"] as? Double ?? 0
-            if Date(timeIntervalSince1970: expiresAt / 1000) > Date() { return result }
-        }
-        return loadBestKeychainEntryWithPrefix("Claude Code-credentials")
-    }
-
-    private static func loadKeychainEntry(service: String) -> [String: Any]? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", service, "-w"]
-
+        process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = Pipe()
@@ -331,20 +322,18 @@ class AuthManager: ObservableObject {
         do {
             try process.run()
             process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
+            if process.terminationStatus == 0,
+               let trimmed = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                   .trimmingCharacters(in: .whitespacesAndNewlines),
+               !trimmed.isEmpty,
+               let jsonData = trimmed.data(using: .utf8),
+               let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                let expiresAt = (json["claudeAiOauth"] as? [String: Any])?["expiresAt"] as? Double ?? 0
+                if Date(timeIntervalSince1970: expiresAt / 1000) > Date() { return json }
+            }
+        } catch {}
 
-            let rawData = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let trimmed = String(data: rawData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-                  !trimmed.isEmpty,
-                  let jsonData = trimmed.data(using: .utf8),
-                  let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
-            else { return nil }
-
-            return json
-        } catch {
-            return nil
-        }
+        return loadBestKeychainEntryWithPrefix("Claude Code-credentials")
     }
 
     private static func loadBestKeychainEntryWithPrefix(_ prefix: String) -> [String: Any]? {
