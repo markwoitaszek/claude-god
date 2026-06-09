@@ -501,15 +501,16 @@ struct MenuBarView: View {
             SHCard {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        SHLabel("Accounts")
+                        SHLabel("Profiles")
                         Spacer()
                         SHButton(label: "Add", icon: "plus", style: .ghost) {
                             let label = manager.accounts.isEmpty ? "Default" : "Account \(manager.accounts.count + 1)"
-                            manager.addAccount(label: label, path: AuthManager.credentialsPath.path)
+                            manager.addAccount(label: label,
+                                               source: .credentialsFile(AuthManager.credentialsPath.path))
                         }
                     }
                     if manager.accounts.isEmpty {
-                        Text("Using default credentials. Add accounts to switch between profiles.")
+                        Text("No profiles found. Add ~/.claude/profiles.json to enable multi-profile quota tracking.")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     } else {
@@ -520,6 +521,14 @@ struct MenuBarView: View {
                                     .frame(width: 6, height: 6)
                                 Text(account.label)
                                     .font(.system(size: 11, weight: index == manager.activeAccountIndex ? .semibold : .regular))
+                                // Per-profile utilization badge from background polling
+                                if let pq = manager.quotasByProfile[account.id],
+                                   let worst = pq.quotas.map(\.utilization).max() {
+                                    Text("\(Int(worst))%")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(UsageLevel(utilization: worst).color)
+                                        .opacity(pq.isStale ? 0.5 : 1.0)
+                                }
                                 Spacer()
                                 if index != manager.activeAccountIndex {
                                     SHButton(label: "Switch", style: .ghost) {

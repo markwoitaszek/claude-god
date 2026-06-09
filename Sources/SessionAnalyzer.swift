@@ -19,6 +19,7 @@ enum UDKey {
     static let sessionAnnotations = "sessionAnnotations"
     static let accounts = "accounts"
     static let activeAccountIndex = "activeAccountIndex"
+    static let profileSourceCache = "profileSourceCache_v1"
     static let notifiedThresholds = "notifiedThresholds"
     static let autoReconnect = "autoReconnect"
     static let widgetQuotas = "widgetQuotas"

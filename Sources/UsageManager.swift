@@ -1,5 +1,6 @@
 // UsageManager.swift
 // Orchestrates usage data: API calls, stats, preferences, notifications
+// Based on Claude God (MIT © 2025 Lucas Charvolin).
 
 import Foundation
 import Combine
@@ -91,7 +92,37 @@ struct SessionAnnotation: Codable {
 struct AccountInfo: Identifiable, Codable {
     var id = UUID()
     var label: String       // e.g. "Work", "Personal"
-    var credentialsPath: String
+    var source: AccountSource
+
+    // Back-compat: old records encoded credentialsPath: String instead of source: AccountSource
+    private enum CodingKeys: String, CodingKey {
+        case id, label, source, credentialsPath
+    }
+
+    init(id: UUID = UUID(), label: String, source: AccountSource) {
+        self.id = id; self.label = label; self.source = source
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id    = (try? c.decode(UUID.self,   forKey: .id))    ?? UUID()
+        label =  try  c.decode(String.self, forKey: .label)
+        if let s = try? c.decode(AccountSource.self, forKey: .source) {
+            source = s
+        } else if let path = try? c.decode(String.self, forKey: .credentialsPath), !path.isEmpty {
+            source = .credentialsFile(path)   // migrate legacy field
+        } else {
+            source = .credentialsFile(AuthManager.credentialsPath.path)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id,     forKey: .id)
+        try c.encode(label,  forKey: .label)
+        try c.encode(source, forKey: .source)
+        // credentialsPath is legacy decode-only — not re-encoded
+    }
 }
 
 // MARK: - Seuils de couleur partagés
@@ -326,6 +357,12 @@ class UsageManager: ObservableObject {
             UserDefaults.standard.set(activeAccountIndex, forKey: UDKey.activeAccountIndex)
         }
     }
+
+    /// Per-account quota snapshots from background polling. Keyed by AccountInfo.id.
+    @Published var quotasByProfile: [UUID: ProfileQuota] = [:]
+
+    let profileRegistry = ProfileRegistryManager()
+    private let quotaPoller = QuotaPoller()
 
     // MARK: - Timeline
 
@@ -812,7 +849,7 @@ class UsageManager: ObservableObject {
             self.sessionAnnotations = [:]
         }
 
-        // Load accounts
+        // Load accounts (migrates legacy credentialsPath → AccountSource via custom init(from:))
         if let data = ud.data(forKey: UDKey.accounts),
            let decoded = try? JSONDecoder().decode([AccountInfo].self, from: data) {
             self.accounts = decoded
@@ -856,6 +893,27 @@ class UsageManager: ObservableObject {
 
         auth.loadCredentials()
         auth.startWatchingCredentials()
+
+        // Start profile registry (reads ~/.claude/profiles.json, watches for changes)
+        profileRegistry.start()
+
+        // Seed accounts from profiles.json on first launch (when no accounts are persisted)
+        profileRegistry.$profiles
+            .filter { !$0.isEmpty }
+            .first()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] discovered in
+                guard let self, self.accounts.isEmpty else { return }
+                self.accounts = discovered.map {
+                    AccountInfo(label: $0.displayName, source: $0.source)
+                }
+                Log.info("Auto-discovered \(self.accounts.count) profile(s) from profiles.json")
+            }.store(in: &cancellables)
+
+        // Forward registry changes to UI
+        profileRegistry.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
 
         // Auto-connect when credentials appear via file watcher
         auth.objectWillChange.sink { [weak self] _ in
@@ -1323,6 +1381,7 @@ class UsageManager: ObservableObject {
             Log.info("Rate limit cooldown expired, resetting backoff")
         }
         refreshInternal()
+        pollAllProfiles()
     }
 
     private func refreshInternal() {
@@ -1911,23 +1970,82 @@ class UsageManager: ObservableObject {
 
     // MARK: - Multi-account
 
-    func addAccount(label: String, path: String) {
-        accounts.append(AccountInfo(label: label, credentialsPath: path))
+    func addAccount(label: String, source: AccountSource) {
+        accounts.append(AccountInfo(label: label, source: source))
     }
 
     func switchAccount(index: Int) {
         guard index >= 0 && index < accounts.count else { return }
         activeAccountIndex = index
-        auth.loadCredentials()
+        // Wire the selected account's credential source into AuthManager (the core bug fix)
+        auth.loadCredentials(from: accounts[index].source)
         // Don't clear quotas — keep old data until new ones arrive
         refresh()
     }
 
     func removeAccount(at index: Int) {
         guard index >= 0 && index < accounts.count else { return }
+        let removedID = accounts[index].id
         accounts.remove(at: index)
+        quotasByProfile.removeValue(forKey: removedID)
         if activeAccountIndex >= accounts.count {
             activeAccountIndex = max(0, accounts.count - 1)
+        }
+    }
+
+    // MARK: - Background multi-profile polling
+
+    private func pollAllProfiles() {
+        let snapshot = accounts
+        guard snapshot.count > 1 else { return }   // Single profile: active fetch is enough
+        quotaPoller.pollAll(accounts: snapshot) { [weak self] id, pq in
+            self?.quotasByProfile[id] = pq
+        }
+    }
+
+    /// Stateless quota fetch: given a bearer token, fetches and returns [UsageQuota] without
+    /// mutating any @Published state. Called by QuotaPoller for background profile polling.
+    static func fetchQuotasStateless(token: String,
+                                     completion: @escaping ([UsageQuota]?) -> Void) {
+        var request = URLRequest(url: usageURL)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token.trimmingCharacters(in: .whitespacesAndNewlines))",
+                         forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("ClaudeGod",        forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            guard let data, error == nil,
+                  let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200,
+                  let decoded = try? JSONDecoder().decode(OAuthUsageResponse.self, from: data)
+            else {
+                completion(nil)
+                return
+            }
+            completion(Self.buildQuotaList(from: decoded))
+        }.resume()
+    }
+
+    private static func buildQuotaList(from response: OAuthUsageResponse) -> [UsageQuota] {
+        let defs: [(quota: QuotaData?, label: String, icon: String)] = [
+            (response.fiveHour,          "Session (5h)",        "bolt.fill"),
+            (response.sevenDay,          "Weekly (all)",        "calendar"),
+            (response.sevenDaySonnet,    "Sonnet (7d)",         "sparkle"),
+            (response.sevenDayOpus,      "Opus (7d)",           "star.fill"),
+            (response.sevenDayOmelette,  "Claude Design (7d)",  "paintbrush.fill"),
+            (response.sevenDayCowork,    "Cowork (7d)",         "person.2.fill"),
+            (response.sevenDayOauthApps, "OAuth Apps (7d)",     "app.connected.to.app.below.fill"),
+            (response.iguanaNecktie,     "Extended (7d)",       "sparkles"),
+            (response.omelettPromotional,"Design Promo (7d)",   "gift.fill"),
+        ]
+        return defs.compactMap { def in
+            guard let q = def.quota else { return nil }
+            return UsageQuota(label: def.label, icon: def.icon,
+                              utilization: q.utilization,
+                              resetsAt: q.resetsAt.flatMap(Formatters.parseISO))
         }
     }
 

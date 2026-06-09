@@ -1,5 +1,6 @@
 // AuthManager.swift
 // Handles OAuth authentication, credential loading, token refresh, and token persistence
+// Based on Claude God (MIT © 2025 Lucas Charvolin).
 
 import Foundation
 import Combine
@@ -86,6 +87,57 @@ class AuthManager: ObservableObject {
                 self.credentialSource = .none
                 self.isAuthenticated = false
                 Log.warn("No credentials found")
+            }
+        }
+    }
+
+    /// Load credentials for a specific profile source (used by switchAccount).
+    /// Falls back to the default cascade if the source yields no token.
+    /// Both branches are non-blocking (off-main-thread I/O, mutations dispatched back to main).
+    func loadCredentials(from source: AccountSource) {
+        switch source {
+        case .credentialsFile(let path):
+            // Disk read off main thread — same pattern as the Keychain branch
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+                let bundle = CredentialLoader.fromFile(url)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if let b = bundle {
+                        self.accessToken = b.accessToken
+                        self.refreshToken = b.refreshToken
+                        self.tokenExpiresAt = b.expiresAt
+                        self.subscriptionType = b.subscriptionType
+                        self.credentialSource = .file
+                        self.isAuthenticated = true
+                        Log.info("Credentials loaded from file for profile (type: \(b.subscriptionType))")
+                        return
+                    }
+                    Log.warn("loadCredentials(from:) file miss — reverting to default cascade")
+                    self.loadCredentials()
+                }
+            }
+
+        case .keychainService(let name):
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let json = Self.readKeychainViaSecurityCLI(service: name, account: nil)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if let json,
+                       let oauth = json["claudeAiOauth"] as? [String: Any],
+                       let token = oauth["accessToken"] as? String, !token.isEmpty {
+                        self.accessToken = token
+                        self.refreshToken = oauth["refreshToken"] as? String
+                        self.tokenExpiresAt = oauth["expiresAt"] as? Double
+                        self.subscriptionType = oauth["subscriptionType"] as? String ?? ""
+                        self.credentialSource = .keychain
+                        self.isAuthenticated = true
+                        Log.info("Credentials loaded from Keychain for profile (type: \(self.subscriptionType))")
+                        return
+                    }
+                    Log.warn("loadCredentials(from:) keychain miss for \(name) — reverting to default cascade")
+                    self.loadCredentials()
+                }
             }
         }
     }
